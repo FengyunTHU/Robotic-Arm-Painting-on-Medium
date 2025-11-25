@@ -45,7 +45,7 @@ def _parse_header_line(line: bytes):
     except Exception:
         return None
     
-def re_uart_file(serial) :
+def re_uart_file(serial):
     """
     串口接收线程（支持接收 header + 固定长度 payload）
     协议：
