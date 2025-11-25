@@ -8,6 +8,7 @@ import serial
 import time
 import os
 import sys
+import threading
 
 def calc_sum8(b: bytes) -> int:
     return sum(b) & 0xFF
@@ -53,6 +54,67 @@ def ping_port(port="COM9", baud=115200, message="PING\n", timeout=5.0) -> int:
         except:
             pass
 
+
+def interactive_session(ser, prompt=">> "):
+    """
+    进入交互监听模式（无超时），直到命令行输入 exit 为止：
+        - 后台线程持续打印串口收到的数据
+        - 主线程读取命令行输入并发送到串口
+        - 输入 'exit' (忽略大小写) 退出并返回
+    """
+    stop_event = threading.Event()
+
+    def reader_loop():
+        while not stop_event.is_set():
+            try:
+                data = ser.read(256)
+            except Exception:
+                data = b""
+            if data:
+                try:
+                    print("<<", data.decode("utf-8", errors="ignore").rstrip())
+                except Exception:
+                    print("<<", data)
+            else:
+                time.sleep(0.05)
+
+    rd_thread = threading.Thread(target=reader_loop, daemon=True)
+    rd_thread.start()
+
+    try:
+        while True:
+            try:
+                cmd = input(prompt)
+            except (EOFError, KeyboardInterrupt):
+                cmd = "exit"
+            if cmd is None:
+                continue
+            cmd_strip = cmd.strip()
+            if cmd_strip.lower() == "exit":
+                stop_event.set()
+                rd_thread.join(timeout=1.0)
+                try:
+                    ser.write(b"EXIT\n")
+                    ser.flush()
+                except Exception:
+                    pass
+                print("已退出交互模式")
+                return
+            # 发送命令到串口（附加换行）
+            outb = (cmd_strip + "\n").encode("utf-8")
+            try:
+                ser.write(outb)
+                ser.flush()
+            except Exception as e:
+                print("发送失败:", e)
+                stop_event.set()
+                rd_thread.join(timeout=1.0)
+                return
+    finally:
+        stop_event.set()
+        rd_thread.join(timeout=1.0)
+
+
 def send_json(port: str, baud: int, filepath: str, retries: int=3, resp_timeout: float=10.0, inter_chunk_delay: float=0.01) -> bool:
     """
     - 使用串口流式发送JSON文件，并进行系列检查操作
@@ -90,13 +152,14 @@ def send_json(port: str, baud: int, filepath: str, retries: int=3, resp_timeout:
             deadline = time.time() + resp_timeout
             resp = b""
             while time.time() < deadline:
-                r = ser.read(64)
-                print(f"读取响应: {r}")
+                r = ser.read(256) # 读取小块回复
                 if r:
+                    print("收到回复片段:", r)
                     resp += r
                     if b"OK" in resp:
                         print("收到 OK，发送成功")
-                        ser.close()
+                        # ser.close()
+                        interactive_session(ser) # 监听
                         return True
                     if b"ERR" in resp:
                         print("收到 ERR，重试")

@@ -22,6 +22,55 @@ serial0 = uart.UART(device, 115200)
 device = "/dev/ttyS2"
 serial1 = uart.UART(device, 115200)
 
+
+# ...existing code...
+def parse_points_from_payload(payload: bytes, max_lens = False, max_points: int = 10):
+    """
+    解析 payload（bytes）并返回 (paths, formatted_list)
+    - 期望 JSON 结构： [ { ..., "points": [ [x,y], ... ] }, ... ]
+    - 返回：
+        paths: list of points-list，每个元素为一条轨迹的完整点列表（[[x,y],...], ...]）
+        formatted_list: 每条轨迹对应的字符串 "x1,y1;x2,y2;..."（如果传入 max_points 为 None，则每条轨迹使用其全部点）
+    """
+    try:
+        j = json.loads(payload.decode('utf-8'))
+    except Exception:
+        return None, None
+
+    if not isinstance(j, list) or len(j) == 0:
+        return None, None
+
+    paths = []
+    formatted = []
+    for entry in j:
+        if not (isinstance(entry, dict) and 'points' in entry):
+            continue
+        pts = entry['points']
+        if not isinstance(pts, list) or len(pts) == 0:
+            paths.append([])
+            formatted.append(None)
+            continue
+        # 存储完整点列
+        paths.append(pts)
+        # 决定本条轨迹的采样上限
+        if max_lens:
+            use_n = len(pts)
+        else:
+            use_n = min(max_points, len(pts))
+        first = pts[:use_n]
+        try:
+            s = ';'.join("{:.3f},{:.3f}".format(float(p[0]), float(p[1])) for p in first)
+        except Exception:
+            try:
+                s = ';'.join("{},{}".format(p[0], p[1]) for p in first)
+            except Exception:
+                s = None
+        formatted.append(s)
+    if len(paths) == 0:
+        return None, None
+    return paths, formatted
+
+
 def _parse_header_line(line: bytes):
     """
     期望格式: b'JSONBEGIN len=12345 chk=ab'
@@ -141,36 +190,28 @@ def re_uart_file(serial):
                         pass
                 
                 ### 解析JSON做验证
-                try:
-                    j = json.loads(payload.decode('utf-8'))
-                except Exception:
-                    j = None
-
-                pts = None
-                if isinstance(j, list) and len(j) > 0 and isinstance(j[0], dict) and 'points' in j[0]:
-                    pts = j[0]['points']
-
-                if pts and len(pts) > 0:
-                    first10 = pts[:10]
-                    # 格式化为 "x1,y1;x2,y2;..."
-                    try:
-                        s = ';'.join("{:.3f},{:.3f}".format(float(p[0]), float(p[1])) for p in first10)
-                    except Exception:
-                        s = ';'.join("{},{}".format(p[0], p[1]) for p in first10)
-                    # 赋值到对应 stuts 并通过该串口立即发送
-                    if serial == serial0:
-                        stuts0 = s
-                    else:
-                        stuts1 = s
-                    try:
-                        serial.write_str((s + "\n").encode("utf-8"))
-                        serial.write_str("OK\n".encode("utf-8"))
-                    except Exception:
+                # 使用提取函数
+                pts, s = parse_points_from_payload(payload, max_lens = False, max_points=10)
+                if pts and s:
+                    for i in range(len(s)):
+                        # 设置状态并回送
+                        si = s[i]
+                        serial.write_str((f"{i},{len(s)}"+"\n").encode("utf-8"))
+                        if serial == serial0:
+                            stuts0 = si
+                        else:
+                            stuts1 = si
                         try:
-                            serial.write_str(s + "\n")
-                            serial.write_str("OK\n")
+                            serial.write_str((si + f"   {len(s)},{i}"+"\n").encode("utf-8"))
+                            if i == len(s) - 1:
+                                serial.write_str("OK\n".encode("utf-8"))
                         except Exception:
-                            pass
+                            try:
+                                serial.write_str(si +f"{len(s)},{i}"+ "\n")
+                                if i == len(s) - 1:
+                                    serial.write_str("OK\n")
+                            except Exception:
+                                pass
 
             except Exception as e:
                 # 保存失败
@@ -201,6 +242,75 @@ def re_uart(serial):
             stuts1  = data
             data    = ""
 
+
+def send_paths_via_serial0(paths, *,
+                            start_tag="START",
+                            end_tag="END",
+                            point_fmt="{:.3f},{:.3f}",
+                            per_point_delay=0.005,
+                            inter_path_delay=0.05):
+    """
+    通过 serial0 依次发送每条轨迹（paths: list of point-list）。
+    每条轨迹发送格式：
+        START <idx> <n>\n
+        x1,y1\n
+        x2,y2\n
+        ...
+        END <idx>\n
+
+    参数：
+        - paths: [[ [x,y], ... ], ...]
+        - point_fmt: 单点格式化字符串，两个占位符对应 x,y
+        - per_point_delay: 每发送一点后的短延时（秒）
+        - inter_path_delay: 路径间延时（秒）
+    返回 True 表示发送完成（不做 ACK 验证）
+    """
+    global serial0
+    if serial0 is None:
+        return False
+    try:
+        for idx, pts in enumerate(paths):
+            if not isinstance(pts, list):
+                continue
+            n = len(pts)
+            # 发送 START 行
+            try:
+                serial0.write_str(f"{start_tag} {idx} {n}\n".encode("utf-8"))
+            except Exception:
+                try:
+                    serial0.write_str(f"{start_tag} {idx} {n}\n")
+                except Exception:
+                    pass
+            # 逐点发送
+            for p in pts:
+                try:
+                    x = float(p[0]); y = float(p[1])
+                    line = point_fmt.format(x, y) + "\n"
+                except Exception:
+                    # 非数值则直接 str
+                    line = f"{p[0]},{p[1]}\n"
+                try:
+                    serial0.write_str(line.encode("utf-8"))
+                except Exception:
+                    try:
+                        serial0.write_str(line)
+                    except Exception:
+                        pass
+                time.sleep(per_point_delay)
+            # 发送 END 行
+            try:
+                serial0.write_str(f"{end_tag} {idx}\n".encode("utf-8"))
+            except Exception:
+                try:
+                    serial0.write_str(f"{end_tag} {idx}\n")
+                except Exception:
+                    pass
+            time.sleep(inter_path_delay)
+        return True
+    except Exception:
+        return False
+
+
 uart0_thread = threading.Thread(target=re_uart_file, args = (serial0,))
 uart0_thread.daemon = True
 uart0_thread.start()
@@ -224,11 +334,11 @@ while not app.need_exit():
     # serial0.write_str("Initialize".encode("utf-8"))
 
     if stuts0 != "" :
-        serial0.write_str(f"uart0:{stuts0}")
+        # serial0.write_str(f"uart0:{stuts0}")
         stuts0 = ""
 
     if stuts1 != "" :
-        serial1.write_str(f"uart1:{stuts1}") 
+        # serial1.write_str(f"uart1:{stuts1}") 
         stuts1 = ""
 
 
