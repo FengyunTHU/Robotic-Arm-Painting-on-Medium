@@ -1,67 +1,81 @@
-# ...existing code...
-import time, threading, queue
+# version: Python3
+import time ,threading  # 导入库函数
+import json
+import queue
+
 
 img_stuts = 0         # 摄像头下发指令编码
-zhilin   = 0          # 摄像头下发16进制指令信息
+zhilin   = 0         # 摄像头下发16进制指令信息
+stuts_add = False
 
-# 轨迹执行队列（接收线程解析到完整轨迹后放入）
+# DEFAULT是P7
+
 traj_queue = queue.Queue()
 
-# 可配置：默认 Z 与姿态（根据机械臂实际需求调整）
-# 绘画初始点P7
-DEFAULT_Z = 0.0
-DEFAULT_RXRYRZ = (0.0, 0.0, 0.0)
-MOVE_V = 100
-
-# 位姿点格式： {"pose":[x, y, z, rx, ry, rz]}
-# my_point_2 = {"pose":[245, 110, 250, 180, 0, 0]}
-# MovL(my_point_2)
-
-
 def execute_traj_worker():
-    """后台线程：从队列取出轨迹并依次运动到每个点，保持可中断/继续接收"""
+    """
+    后台线程：从 traj_queue 取出一条轨迹（点列表），依次移动到每个点以“绘制”轨迹。
+    这里使用 MovJ 作示例，如需直线插补请用 MovL/相应 API。
+    点格式支持 [x,y] 或 [x,y,z]，若无 z 使用 0.0。
+    """
+    DEFAULT_XYZ = (276.0, 123.0, 227.0)
+    DEFAULT_RXRYRZ = (-180.0, 0.0, 0.0)
+    MOVE_V = 100
     while True:
-        pts = traj_queue.get()  # blocking
+        pts = traj_queue.get()  # 阻塞直到有轨迹
         if pts is None:
+            traj_queue.task_done()
             break
         try:
+            # 依次运动到每个点
             for p in pts:
-                # p 可能是 [x,y] 或 [x,y,z]
                 try:
-                    x = float(p[0])
-                    y = float(p[1])
-                    z = float(p[2]) if len(p) >= 3 else DEFAULT_Z
+                    x = float(p[0]); y = float(p[1])
                 except Exception:
-                    # 跳过非法点
                     continue
-                # 构造位姿，根据你机器人接口调整格式
-                P_target = [x, y, z, DEFAULT_RXRYRZ[0], DEFAULT_RXRYRZ[1], DEFAULT_RXRYRZ[2]]
-                # 发送运动指令（MovJ/MovL 根据需求）
-                try:
-                    MovJ(P_target, {"user": 0, "v": MOVE_V})
-                except Exception:
-                    # 若 MovJ 不可用或抛错，可做降级或重试
-                    pass
-                # 允许短暂让步，避免完全阻塞（也能让其它线程运行）
-                time.sleep(0.01)
+                z = float(p[2]) if (isinstance(p, (list,tuple)) and len(p) >= 3) else DEFAULT_XYZ[2]
+                # print([x, y, 0, DEFAULT_RXRYRZ[0], DEFAULT_RXRYRZ[1], DEFAULT_RXRYRZ[2]])
+                assert P7 is not None, "P7 未定义，请根据实际机械臂型号修改代码"
+                SP0 = {"pose":[DEFAULT_XYZ[0]+x, DEFAULT_XYZ[1]+y, DEFAULT_XYZ[2], DEFAULT_RXRYRZ[0], DEFAULT_RXRYRZ[1], DEFAULT_RXRYRZ[2]]}
+                # P_target = RelPointUser(P7, [x, y, 0, DEFAULT_RXRYRZ[0], DEFAULT_RXRYRZ[1], DEFAULT_RXRYRZ[2]])
+                status = CheckMovL(SP0)
+                if status == 0:
+                    try:
+                        # 以关节插补为例，若需要直线，请替换为 MovL
+                        MovL(SP0)
+                    except Exception:
+                        # 若 MovJ 不可用，打印并继续
+                        try:
+                            print("MovL failed for point:", SP0)
+                        except:
+                            pass
+                # 给机器人短暂响应时间
+                time.sleep(2.0)
         finally:
             traj_queue.task_done()
 
-# 启动执行线程
-worker_thread = threading.Thread(target=execute_traj_worker, daemon=True)
-worker_thread.start()
 
 def receiveThread(socket1):
-    global img_stuts, zhilin
-    buf = ""  # 文本缓冲，可能包含多行
-    # 状态机用于解析一条轨迹
+    """
+    接收线程：读取 socket 数据，支持两类内容
+      1) 原有命令处理（Initialize / biao ...）
+      2) 轨迹接收协议（可由上位机按行发送）:
+         - START <idx> <n>
+         - x,y 或 x,y,z  （每行一个点）
+         - END <idx>
+       完整轨迹接收完后把点列表放入 traj_queue，由执行线程依次绘制/运动。
+       同时保持原有对 Initialize 和 biao 的处理与回执。
+    """
+    global img_stuts, zhilin, stuts_add
+    print("启动接收线程")
+    buf = ""           # 文本缓冲
     in_traj = False
     expect_n = 0
     collected = []
     while True:
         len_js = 0
         recBuf = 0
-        err, data = TCPRead(socket1)      # 假设 TCPRead 非阻塞式或短阻塞
+        err, data = TCPRead(socket1)
         if err != 0 or not data:
             time.sleep(0.01)
             continue
@@ -70,74 +84,73 @@ def receiveThread(socket1):
         except Exception:
             chunk = str(data)
         buf += chunk
-        # 按行处理
+        print("收到数据:", chunk.strip())
+        # 按行解析
         while '\n' in buf:
             line, buf = buf.split('\n', 1)
             line = line.strip()
             if not line:
                 continue
-            # 保留原有命令处理
-            if 'Initialize' in line and img_stuts == 0:
-                img_stuts = 1
-                TCPWrite(socket1, "yunxing")
-                continue
-            if line.startswith('biao') and img_stuts == 0 and len(line) >= 16:
-                try:
-                    x_zb = int(line[4:8])
-                    y_zb = int(line[8:12])
-                    z_zb = int(line[12:16])
-                except Exception:
-                    continue
-                img_stuts = 2
-                if x_zb > 0:
-                    print(x_zb)
-                if z_zb < 0:
-                    print(y_zb, z_zb)
-                TCPWrite(socket1, "yunxing")
-                continue
 
-            # 轨迹协议解析（START/点行/END）
+            # 轨迹协议解析 START/点/END
             parts = line.split()
             if parts and parts[0] == 'START':
-                # 格式：START <idx> <n>
                 in_traj = True
                 collected = []
                 expect_n = int(parts[2]) if len(parts) >= 3 else 0
-                # 可回执确认开始接收
                 TCPWrite(socket1, "START_ACK")
                 continue
             if in_traj:
-                # 检查是否 END 行
+                # END 行
                 if parts and parts[0] == 'END':
-                    # 完整轨迹接收完毕（也可核对 idx）
                     in_traj = False
-                    # 若实际收到的点数少于期望也可以处理或丢弃
-                    # 把 collected 放入执行队列（后台线程执行）
-                    if len(collected) > 0:
+                    # 将收集到的点入队执行
+                    if collected:
                         traj_queue.put(collected)
                         TCPWrite(socket1, "TRAJ_RECEIVED")
                     else:
                         TCPWrite(socket1, "TRAJ_EMPTY")
                     collected = []
                     expect_n = 0
+                    stuts_add = True
                     continue
-                # 否则当作点行，格式 x,y 或 x,y,z
+                # 点行 x,y 或 x,y,z
                 try:
                     coords = [c.strip() for c in line.split(',') if c.strip()!='']
                     if len(coords) >= 2:
-                        # 转换为数值列表保留原格式
                         pt = [float(coords[0]), float(coords[1])]
                         if len(coords) >= 3:
                             pt.append(float(coords[2]))
                         collected.append(pt)
                 except Exception:
-                    # 忽略无法解析的点
+                    # 忽略解析错误
                     pass
-                # 可选择在收到期望点数后自动结束（如果发送端没有END）
+                # 若发送方没有 END，但已达到期望点数则自动结束并入队
                 if expect_n > 0 and len(collected) >= expect_n:
                     in_traj = False
                     traj_queue.put(collected)
                     TCPWrite(socket1, "TRAJ_RECEIVED")
                     collected = []
                     expect_n = 0
+                    stuts_add = True
                 continue
+            # 其他非轨迹内容，直接回显并继续监听
+            try:
+                TCPWrite(socket1, line)  # 回发原行，保持监听
+            except Exception:
+                pass
+
+
+# 网口初始化
+err, socket1 = TCPCreate(True, "192.168.5.1", 5200)   #视觉系统
+TCPStart(socket1, 0)
+
+tcp_js1 = threading.Thread(target=receiveThread,args=(socket1, ))
+tcp_js1.daemon = True
+tcp_js1.start()
+print("启动接收线程完成")
+
+while True:
+    if stuts_add:
+        execute_traj_worker()
+        stuts_add = False

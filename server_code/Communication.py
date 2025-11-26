@@ -94,14 +94,14 @@ def interactive_session(ser, prompt=">> "):
                 stop_event.set()
                 rd_thread.join(timeout=1.0)
                 try:
-                    ser.write(b"EXIT\n")
+                    ser.write(b"EXIT")
                     ser.flush()
                 except Exception:
                     pass
                 print("已退出交互模式")
                 return
             # 发送命令到串口（附加换行）
-            outb = (cmd_strip + "\n").encode("utf-8")
+            outb = (cmd_strip).encode("utf-8")
             try:
                 ser.write(outb)
                 ser.flush()
