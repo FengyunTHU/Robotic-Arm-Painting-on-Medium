@@ -20,7 +20,7 @@ def execute_traj_worker():
     """
     DEFAULT_XYZ = (276.0, 123.0, 227.0)
     DEFAULT_RXRYRZ = (-180.0, 0.0, 0.0)
-    MOVE_V = 100
+    MOVE_V = 50
     while True:
         pts = traj_queue.get()  # 阻塞直到有轨迹
         if pts is None:
@@ -38,6 +38,8 @@ def execute_traj_worker():
                 assert P7 is not None, "P7 未定义，请根据实际机械臂型号修改代码"
                 SP0 = {"pose":[DEFAULT_XYZ[0]+x, DEFAULT_XYZ[1]+y, DEFAULT_XYZ[2], DEFAULT_RXRYRZ[0], DEFAULT_RXRYRZ[1], DEFAULT_RXRYRZ[2]]}
                 # P_target = RelPointUser(P7, [x, y, 0, DEFAULT_RXRYRZ[0], DEFAULT_RXRYRZ[1], DEFAULT_RXRYRZ[2]])
+                CP(50)
+                AccL(50)
                 status = CheckMovL(SP0)
                 if status == 0:
                     try:
