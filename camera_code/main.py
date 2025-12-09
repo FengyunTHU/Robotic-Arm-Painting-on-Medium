@@ -59,7 +59,7 @@ def parse_points_from_payload(payload: bytes, max_lens = False, max_points: int 
             continue
         # 存储完整点列
         paths.append(pts)
-        # 决定本条轨迹的采样上限
+        # 决定本条轨迹的采样上限->注意这里还是发送了完整的轨迹
         if max_lens:
             use_n = len(pts)
         else:

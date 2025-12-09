@@ -5,3 +5,4 @@ from Communication import send_json as send_J
 if __name__ == "__main__":
     # ping("COM9", 115200, "ALPHABET\n", 5.0)
     send_J("COM9", 115200, "./JSON/1_points.json", retries=3, resp_timeout=10.0, inter_chunk_delay=0.01)
+    # ps_svg(svg_path='../x.svg',id=1)

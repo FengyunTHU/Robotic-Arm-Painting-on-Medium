@@ -2,24 +2,38 @@
 import time ,threading  # 导入库函数
 import json
 import queue
+import csv ## 创建csv文件
+
+
+## 在下面俩个文件夹中都保存了csv
+PATH1:str = "/dobot/userdata/user_project/process/trajectory/"
+PATH2:str = "/dobot/userdata/project/process/trajectory/"
+
+## user:0, tool:0, ecokey:0.
+HEAD:list = ['j1','j2','j3','j4','j5','j6','x','y','z','Rx','Ry','Rz','user','tool','ecoKey']
 
 
 img_stuts = 0         # 摄像头下发指令编码
 zhilin   = 0         # 摄像头下发16进制指令信息
 stuts_add = False
+Path_id = 0
 
 # DEFAULT是P7
 
 traj_queue = queue.Queue()
 
-def execute_traj_worker():
+def execute_traj_worker(ori_angle, ori_pose):
     """
     后台线程：从 traj_queue 取出一条轨迹（点列表），依次移动到每个点以“绘制”轨迹。
     这里使用 MovJ 作示例，如需直线插补请用 MovL/相应 API。
     点格式支持 [x,y] 或 [x,y,z]，若无 z 使用 0.0。
     """
-    DEFAULT_XYZ = (276.0, 123.0, 227.0)
-    DEFAULT_RXRYRZ = (-180.0, 0.0, 0.0)
+    DEFAULT_XYZ = ori_pose["pose"][0:3]
+    DEFAULT_RXRYRZ = ori_pose["pose"][3:6]
+    assert list(DEFAULT_XYZ) == [276.0, 123.0, 227.0]
+    assert list(DEFAULT_RXRYRZ) == [-180.0, 0.0, 0.0]
+    DEFAULT_JOINT = ori_angle["joint"] # [j1,j2,j3,j4,j5,j6] of P7
+
     MOVE_V = 50
     while True:
         pts = traj_queue.get()  # 阻塞直到有轨迹
@@ -27,32 +41,29 @@ def execute_traj_worker():
             traj_queue.task_done()
             break
         try:
+            Path_id+=1
+            file1 = PATH1 + f"x{Path_id}.csv"
+            file2 = PATH2 + f"x{Path_id}.csv"
             # 依次运动到每个点
-            for p in pts:
-                try:
-                    x = float(p[0]); y = float(p[1])
-                except Exception:
-                    continue
-                z = float(p[2]) if (isinstance(p, (list,tuple)) and len(p) >= 3) else DEFAULT_XYZ[2]
-                # print([x, y, 0, DEFAULT_RXRYRZ[0], DEFAULT_RXRYRZ[1], DEFAULT_RXRYRZ[2]])
-                assert P7 is not None, "P7 未定义，请根据实际机械臂型号修改代码"
-                SP0 = {"pose":[DEFAULT_XYZ[0]+x, DEFAULT_XYZ[1]+y, DEFAULT_XYZ[2], DEFAULT_RXRYRZ[0], DEFAULT_RXRYRZ[1], DEFAULT_RXRYRZ[2]]}
-                # P_target = RelPointUser(P7, [x, y, 0, DEFAULT_RXRYRZ[0], DEFAULT_RXRYRZ[1], DEFAULT_RXRYRZ[2]])
-                CP(50)
-                AccL(50)
-                status = CheckMovL(SP0)
-                if status == 0:
-                    try:
-                        # 以关节插补为例，若需要直线，请替换为 MovL
-                        MovL(SP0)
-                    except Exception:
-                        # 若 MovJ 不可用，打印并继续
-                        try:
-                            print("MovL failed for point:", SP0)
-                        except:
-                            pass
-                # 给机器人短暂响应时间
-                time.sleep(2.0)
+            with open(file1, 'w', newline='') as f1, open(file2, 'w', newline='') as f2:
+                writer1 = csv.writer(f1)
+                writer2 = csv.writer(f2)
+                # 写入表头
+                writer1.writerow(HEAD)
+                writer2.writerow(HEAD)
+                for p in pts:
+                    x_ = float(p[0]); y_ = float(p[1])
+                    z = float(p[2]) if (isinstance(p, (list,tuple)) and len(p) >= 3) else DEFAULT_XYZ[2]
+                    # 构造行数据：关节角度 + 位置 + 姿态 + user/tool/ecoKey
+                    # 反解算joint
+                    errid, jointpoint = InverseKin({"pose":[x_+DEFAULT_XYZ[0], y_+DEFAULT_XYZ[1], z]+list[DEFAULT_RXRYRZ]})
+                    if errid == 0:
+                        row = jointpoint["joint"] + [x_+DEFAULT_XYZ[0], y_+DEFAULT_XYZ[1], z] + list(DEFAULT_RXRYRZ) + [0, 0, 0]
+                        writer1.writerow(row)
+                        writer2.writerow(row)
+
+                    # time.sleep(2.0)
+            print(f"成功写入{file1},{file2}-----------------")
         finally:
             traj_queue.task_done()
 
@@ -152,7 +163,17 @@ tcp_js1.daemon = True
 tcp_js1.start()
 print("启动接收线程完成")
 
+## 运动至初始点位
+assert P7 is not None, "P7 未定义，请根据实际机械臂型号修改代码"
+status = CheckMovJ(P7)
+if status == 0:
+    MovJ(P7)
+
+time.sleep(2.0)
+ori_point_angle = GetAngle()
+ori_point_pose = GetPose()
+
 while True:
     if stuts_add:
-        execute_traj_worker()
+        execute_traj_worker(ori_angle=ori_point_angle, ori_pose=ori_point_pose)
         stuts_add = False
