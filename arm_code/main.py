@@ -3,6 +3,7 @@ import time ,threading  # 导入库函数
 import json
 import queue
 import csv ## 创建csv文件
+from math import sin,cos,tan
 
 
 ## 在下面俩个文件夹中都保存了csv
@@ -20,14 +21,40 @@ Path_id = 0
 
 # DEFAULT是P7
 
-traj_queue = queue.Queue()
 
+traj_queue = queue.Queue()
+COLOR_CSV:dict = dict() # 存储id、csv路径和color
+color_queue = queue.Queue()
+
+"""
+x正方向：内部
+y负方向：右侧
+z正方向：上侧
+"""
+
+
+### 进行液体吸取的函数
+def Input_liquid(start_point, distance, target:str="Y", angle:float=30.0) -> bool:
+    ## angle是与水平方向的夹角
+    current_angle = GetAngle()
+    current_pose = GetPose()
+
+    X, Y, Z, RX, RY, RZ = current_pose["pose"][0:6]
+    ## 向y正方向移动
+    YR = Y + distance*cos(angle)
+    ZR = Z - distance*sin(angle)
+    MovL({"pose":[X,YR,ZR,RX,RY,RZ]},{"v":30})
+    time.sleep(1.0)
+    MovL({"pose":[X,Y,Z,RX,RY,RZ]},{"v":30})
+    return True
+
+
+### 执行绘画运动的函数
 def execute_traj_worker(ori_angle, ori_pose):
     """
-    后台线程：从 traj_queue 取出一条轨迹（点列表），依次移动到每个点以“绘制”轨迹。
-    这里使用 MovJ 作示例，如需直线插补请用 MovL/相应 API。
-    点格式支持 [x,y] 或 [x,y,z]，若无 z 使用 0.0。
+    从queue中不断取出点构架轨迹csv。依次进行csv绘制。同一轨迹的颜色应当相同。
     """
+    global COLOR_CSV
     DEFAULT_XYZ = ori_pose["pose"][0:3]
     DEFAULT_RXRYRZ = ori_pose["pose"][3:6]
     assert list(DEFAULT_XYZ) == [276.0, 123.0, 227.0]
@@ -63,9 +90,23 @@ def execute_traj_worker(ori_angle, ori_pose):
                         writer2.writerow(row)
 
                     # time.sleep(2.0)
+                
+                COLOR_CSV[Path_id] = {"csv":(file1,file2),"color":color_queue.get()}
             print(f"成功写入{file1},{file2}-----------------")
         finally:
             traj_queue.task_done()
+
+def GetLiquid(color):
+    return 
+
+def run(pathid:int):
+    file01,file02 = COLOR_CSV[pathid]["csv"]
+    color = COLOR_CSV[pathid]["color"]
+    GetLiquid(color) # 获取对应颜色的菌液
+    time.sleep(1.0)
+    ## 执行绘画
+    StartPath(f"x{pathid}.csv")
+    time.sleep(1.0)
 
 
 def receiveThread(socket1):
@@ -79,12 +120,13 @@ def receiveThread(socket1):
        完整轨迹接收完后把点列表放入 traj_queue，由执行线程依次绘制/运动。
        同时保持原有对 Initialize 和 biao 的处理与回执。
     """
-    global img_stuts, zhilin, stuts_add
+    global img_stuts, zhilin, stuts_add, COLOR_CSV
     print("启动接收线程")
     buf = ""           # 文本缓冲
     in_traj = False
     expect_n = 0
     collected = []
+    color = None
     while True:
         len_js = 0
         recBuf = 0
@@ -110,20 +152,28 @@ def receiveThread(socket1):
             if parts and parts[0] == 'START':
                 in_traj = True
                 collected = []
+                color = None
                 expect_n = int(parts[2]) if len(parts) >= 3 else 0
                 TCPWrite(socket1, "START_ACK")
                 continue
             if in_traj:
+                # COLOR
+                if parts and parts[0] == 'COLOR':
+                    color = parts[1] if len(parts) >= 2 else "default"
+                    TCPWrite(socket1, "COLOR_ACK")
+                    continue
                 # END 行
                 if parts and parts[0] == 'END':
                     in_traj = False
                     # 将收集到的点入队执行
                     if collected:
+                        color_queue.put(color)
                         traj_queue.put(collected)
                         TCPWrite(socket1, "TRAJ_RECEIVED")
                     else:
                         TCPWrite(socket1, "TRAJ_EMPTY")
                     collected = []
+                    color = None
                     expect_n = 0
                     stuts_add = True
                     continue

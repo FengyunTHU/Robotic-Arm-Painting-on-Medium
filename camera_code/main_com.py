@@ -49,16 +49,19 @@ def parse_points_from_payload(payload: bytes, max_lens = False, max_points: int 
 
     paths = []
     formatted = []
+    colors:list = []
     for entry in j:
         if not (isinstance(entry, dict) and 'points' in entry):
             continue
         pts = entry['points']
+        color = entry["attrs"]["fills"]
         if not isinstance(pts, list) or len(pts) == 0:
             paths.append([])
             formatted.append(None)
             continue
         # 存储完整点列
         paths.append(pts)
+        colors.append(color)
         # 决定本条轨迹的采样上限->注意这里还是发送了完整的轨迹
         if max_lens:
             use_n = len(pts)
@@ -75,7 +78,7 @@ def parse_points_from_payload(payload: bytes, max_lens = False, max_points: int 
         formatted.append(s)
     if len(paths) == 0:
         return None, None
-    return paths, formatted
+    return paths, colors, formatted
 
 
 def _parse_header_line(line: bytes):
@@ -229,7 +232,7 @@ def re_uart(serial):
             data    = ""
 
 
-def send_paths_via_serial0(paths, *,
+def send_paths_via_serial0(paths, colors=None, *,
                             start_tag="START",
                             end_tag="END",
                             point_fmt="{:.3f},{:.3f}",
@@ -239,6 +242,7 @@ def send_paths_via_serial0(paths, *,
     通过 serial0 依次发送每条轨迹（paths: list of point-list）。
     每条轨迹发送格式：
         START <idx> <n>\n
+        COLOR <color>\n
         x1,y1\n
         x2,y2\n
         ...
@@ -259,12 +263,21 @@ def send_paths_via_serial0(paths, *,
             if not isinstance(pts, list):
                 continue
             n = len(pts)
+            color = colors[idx] if colors and idx < len(colors) else "default"
             # 发送 START 行
             try:
                 serial0.write_str(f"{start_tag} {idx} {n}\n".encode("utf-8"))
             except Exception:
                 try:
                     serial0.write_str(f"{start_tag} {idx} {n}\n")
+                except Exception:
+                    pass
+            ## 发送color 行
+            try:
+                serial0.write_str(f"COLOR {color}\n".encode("utf-8"))
+            except Exception:
+                try:
+                    serial0.write_str(f"COLOR {color}\n")
                 except Exception:
                     pass
             # 逐点发送
