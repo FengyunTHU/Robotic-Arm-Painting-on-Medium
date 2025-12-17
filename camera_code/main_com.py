@@ -2,7 +2,7 @@
 - 在maix摄像头上用串口接收文件，并解析json文件后发送给机械臂
 - serial0与机械臂通讯、serial1与电脑通讯
 """
-from maix import camera, display, pinmap, uart, app, time
+from maix import camera, display, pinmap, uart, app, time, gpio, err
 import threading
 import os
 import json
@@ -13,9 +13,12 @@ stuts1  = ""
 
 stuts_err1 = ""
 stuts_ok1 = ""
+stutsoks = ""
 stuts_send1TO0 = ""
 stuts_hassend0 = False
+stuts_05 = 0
 file_path = ""
+arm_name = ""
 
 #摄像头初始化
 cam = camera.Camera(1024, 960)
@@ -42,10 +45,10 @@ def parse_points_from_payload(payload: bytes, max_lens = False, max_points: int 
     try:
         j = json.loads(payload.decode('utf-8'))
     except Exception:
-        return None, None
+        return None, None, None
 
     if not isinstance(j, list) or len(j) == 0:
-        return None, None
+        return None, None, None
 
     paths = []
     formatted = []
@@ -54,7 +57,7 @@ def parse_points_from_payload(payload: bytes, max_lens = False, max_points: int 
         if not (isinstance(entry, dict) and 'points' in entry):
             continue
         pts = entry['points']
-        color = entry["attrs"]["fills"]
+        color = entry["attrs"]["fill"]
         if not isinstance(pts, list) or len(pts) == 0:
             paths.append([])
             formatted.append(None)
@@ -77,7 +80,7 @@ def parse_points_from_payload(payload: bytes, max_lens = False, max_points: int 
                 s = None
         formatted.append(s)
     if len(paths) == 0:
-        return None, None
+        return None, None, None
     return paths, colors, formatted
 
 
@@ -106,131 +109,123 @@ def _parse_header_line(line: bytes):
     
 def re_uart_file(serial):
     """
-    串口接收线程（支持接收 header + 固定长度 payload）
+    串口接收线程（支持接收 header + 固定长度 payload，或处理 ARMSEND 命令）
     协议：
-        发送端先发一行 header 以换行结束：
-        JSONBEGIN len=<bytes> chk=<sum8>\n
-        随后发送 exactly <bytes> 的原始 JSON 二进制流（UTF-8）
-        接收端校验后回 "OK\n" 或 "ERR\n"
+        - JSONBEGIN: 发送端先发一行 header 以换行结束：
+            JSONBEGIN len=<bytes> chk=<sum8>\n
+            随后发送 exactly <bytes> 的原始 JSON 二进制流（UTF-8）
+            接收端校验后回 "OK\n" 或 "ERR\n"
+        - ARMSEND: ARMSEND=<NAME>\n，设置 stuts_05 = 1
     """
-    global stuts0, stuts1, serial0, serial1, stuts_ok1, stuts_err1, stuts_send1TO0, file_path
+    global stuts0, stuts1, serial0, serial1, stuts_ok1, stuts_err1, stuts_send1TO0, file_path, stuts_05, arm_name
     buf = bytearray()
     while True:
         data = serial.read()
         if not data:
-            time.sleep(0.01)
-            continue
+            continue  # 移除延时，设置为常开无延时
         # serial.read() 可能已经是 bytes
         if isinstance(data, str):
             chunk = data.encode('utf-8', errors='ignore')
         else:
             chunk = data
         buf.extend(chunk)
-        # if (chunk == "EXITR"):
-        #     stuts_send1TO0 = "exit"
-        #     break
 
         # 尝试找到 header 行（以第一个换行符为界）
         while True:
             nlpos = buf.find(b'\n')
             if nlpos == -1:
                 break
-            header_line = bytes(buf[:nlpos])  # 包含 header（不含换行）
-            parsed = _parse_header_line(header_line)
-            # 移除 header 行（包含换行）
+            line = bytes(buf[:nlpos])  # 包含行（不含换行）
             buf = buf[nlpos+1:]
-            if not parsed:
-                # 非法 header，继续查找下一个换行（丢弃此行）
-                continue
-            expected_len, expected_chk = parsed
-            # res = subprocess.run(["ip", "addr"],capture_output=True, text=True, check=True)
-            serial.write_str(f"HEADER RECEIVED len={expected_len} chk=0x{expected_chk:02X}\n".encode("utf-8"))
-            # 等待 payload 完整到达
-            start_time = time.time()
-            timeout = max(5, expected_len / 20000)  # 粗略超时（秒），可调
-            while len(buf) < expected_len and (time.time() - start_time) < timeout:
-                more = serial.read()
-                if more:
-                    if isinstance(more, str):
-                        buf.extend(more.encode('utf-8', errors='ignore'))
+            line_str = line.decode('utf-8', errors='ignore').strip()
+            if line_str.startswith("JSONBEGIN"):
+                parsed = _parse_header_line(line)
+                if not parsed:
+                    # 非法 header，继续查找下一个换行（丢弃此行）
+                    continue
+                expected_len, expected_chk = parsed
+                try:
+                    serial.write_str(f"HEADER RECEIVED len={expected_len} chk=0x{expected_chk:02X}\n".encode("utf-8"))
+                except Exception:
+                    pass
+                # 等待 payload 完整到达
+                start_time = time.time()
+                timeout = max(5, expected_len / 20000)  # 粗略超时（秒），可调
+                while len(buf) < expected_len and (time.time() - start_time) < timeout:
+                    more = serial.read()
+                    if more:
+                        if isinstance(more, str):
+                            buf.extend(more.encode('utf-8', errors='ignore'))
+                        else:
+                            buf.extend(more)
                     else:
-                        buf.extend(more)
-                else:
-                    time.sleep(0.01)
-            if len(buf) < expected_len:
-                # 超时或不完整，告诉发送端出错（接收端可根据需要选择不回复以触发重传）
-                try:
-                    stuts_err1 = "TIMEOUT\n"
-                except Exception:
+                        continue  # 无延时
+                if len(buf) < expected_len:
+                    # 超时或不完整，告诉发送端出错（接收端可根据需要选择不回复以触发重传）
                     try:
                         stuts_err1 = "TIMEOUT\n"
                     except Exception:
-                        pass
-                # 清空缓冲避免永久阻塞（或选择保留 buf 以重试）
-                buf = bytearray()
-                break  # 等待下一 header
-            # 取得 payload
-            payload = bytes(buf[:expected_len])
-            # 移除已消费的 payload（保留后续可能连续的报文）
-            buf = buf[expected_len:]
-            # 校验 sum8
-            chk = sum(payload) & 0xFF
-            if chk != (expected_chk & 0xFF):
-                try:
-                    stuts_err1 = "TIMEOUT\n"
-                except Exception:
+                        try:
+                            stuts_err1 = "TIMEOUT\n"
+                        except Exception:
+                            pass
+                    # 清空缓冲避免永久阻塞（或选择保留 buf 以重试）
+                    buf = bytearray()
+                    break  # 等待下一 header
+                # 取得 payload
+                payload = bytes(buf[:expected_len])
+                # 移除已消费的 payload（保留后续可能连续的报文）
+                buf = buf[expected_len:]
+                # 校验 sum8
+                chk = sum(payload) & 0xFF
+                if chk != (expected_chk & 0xFF):
                     try:
-                        stuts_err1 = "TIMEOUT\n"
+                        stuts_err1 = "CHK_ERR\n"
                     except Exception:
-                        pass
-                # 丢弃此 payload，继续
-                continue
-            # 校验通过 -> 保存文件（根据需要选择路径）
-            try:
-                # 尝试保存到 /sd 或当前目录
-                fname = "/root/JSONS/received.json" if os.path.isdir("/root/JSONS") else "received.json"
-                file_path = fname
-                # 若文件较大可分块写入
-                with open(fname, "wb") as fw:
-                    fw.write(payload)
-                # 成功回复
+                        try:
+                            stuts_err1 = "CHK_ERR\n"
+                        except Exception:
+                            pass
+                    # 丢弃此 payload，继续
+                    continue
+                # 校验通过 -> 保存文件（根据需要选择路径）
                 try:
-                    stuts_ok1 = "OK "+fname+"\n"
-                except Exception:
+                    # 尝试保存到 /sd 或当前目录
+                    fname = "/root/JSONS/received.json" if os.path.isdir("/root/JSONS") else "received.json"
+                    file_path = fname
+                    # 若文件较大可分块写入
+                    with open(fname, "wb") as fw:
+                        fw.write(payload)
+                    # 成功回复
                     try:
                         stuts_ok1 = "OK "+fname+"\n"
+                        stuts_05 = 1
                     except Exception:
-                        pass
-                
-            except Exception as e:
-                # 保存失败
-                try:
-                    stuts_err1 = "FAIL\n"
-                except Exception:
+                        try:
+                            stuts_ok1 = "OK "+fname+"\n"
+                            stuts_05 = 1
+                        except Exception:
+                            pass
+                    
+                except Exception as e:
+                    # 保存失败
                     try:
                         stuts_err1 = "FAIL\n"
                     except Exception:
-                        pass
-            # 继续循环，支持缓冲中还有下一个 header/payload
-        # end inner while
-
-def re_uart(serial):
-    """
-    信号收发代码-TEST
-    """
-    global stuts0, stuts1, serial0, serial1
-    while 1:
-        # 串口  接收数据
-        data = serial.read()
-        data = data.decode("utf-8",errors="ignore")
-        if data != "" and serial == serial0:  #串口0 赋值
-        #   print(data)
-            stuts0  = data
-            data    = ""
-        if data != "" and serial == serial1:  #串口1 赋值
-            stuts1  = data
-            data    = ""
-
+                        try:
+                            stuts_err1 = "FAIL\n"
+                        except Exception:
+                            pass
+                # 继续循环，支持缓冲中还有下一个 header/payload
+            # end inner while
+            elif line_str.startswith("ARMSEND="):
+                arm_name = line_str[8:].strip()
+                stuts_05 = 1
+                try:
+                    serial.write_str(b"ARMSEND_ACK\n")
+                except Exception:
+                    pass
+                continue
 
 def send_paths_via_serial0(paths, colors=None, *,
                             start_tag="START",
@@ -310,9 +305,9 @@ def send_paths_via_serial0(paths, colors=None, *,
         return False
 
 
-uart0_thread = threading.Thread(target=re_uart_file, args = (serial0,))
-uart0_thread.daemon = True
-uart0_thread.start()
+# uart0_thread = threading.Thread(target=re_uart_file, args = (serial0,))
+# uart0_thread.daemon = True
+# uart0_thread.start()
 
 uart1_thread = threading.Thread(target=re_uart_file, args = (serial1,))
 uart1_thread.daemon = True
@@ -320,8 +315,8 @@ uart1_thread.start()
 
 
 while not app.need_exit():
-    img = cam.read()
-    disp.show(img)
+    # img = cam.read()
+    # disp.show(img)
     time.sleep(2)
     # u_id   = "biao"
     # x_zb   = int(30.5)
@@ -331,29 +326,22 @@ while not app.need_exit():
     # serial0.write_str(u_data)
     # time.sleep(2)
     # serial0.write_str("Initialize".encode("utf-8"))
-
-    if stuts0 != "" :
-        # serial0.write_str(f"uart0:{stuts0}")
-        stuts0 = ""
-
-    if stuts1 != "" :
-        # serial1.write_str(f"uart1:{stuts1}") 
-        stuts1 = ""
     
     if stuts_err1 != "" :
         serial1.write_str(stuts_err1.encode("utf-8"))
         stuts_err1 = ""
 
-    if stuts_ok1 != "" :
+    if stuts_ok1 != "":
         serial1.write_str(stuts_ok1.encode("utf-8"))
         # 执行发送
-        if not stuts_hassend0:
+        if not stuts_hassend0 and stuts_05:
+            print("001", arm_name, file_path)
             # 读取并解析 JSON，取每条轨迹完整点列
             with open(file_path, "rb") as fr:
                 payload = fr.read()
-            paths, _ = parse_points_from_payload(payload, max_lens=False, max_points=10)
+            paths, colors, _ = parse_points_from_payload(payload, max_lens=False, max_points=10)
             if paths:
-                ok_send = send_paths_via_serial0(paths)
+                ok_send = send_paths_via_serial0(paths,colors)
                 if ok_send:
                     serial1.write_str(b"SENT_TO_SERIAL0\n")
                     stuts_hassend0 = True

@@ -55,11 +55,11 @@ def ping_port(port="COM9", baud=115200, message="PING\n", timeout=5.0) -> int:
             pass
 
 
-def interactive_session(ser, prompt=">> "):
+def interactive_session(ser, port="COM9", baud=115200, prompt=">> "):
     """
     进入交互监听模式（无超时），直到命令行输入 exit 为止：
         - 后台线程持续打印串口收到的数据
-        - 主线程读取命令行输入并发送到串口
+        - 主线程读取命令行输入并处理特定命令或发送到串口
         - 输入 'exit' (忽略大小写) 退出并返回
     """
     stop_event = threading.Event()
@@ -100,22 +100,36 @@ def interactive_session(ser, prompt=">> "):
                     pass
                 print("已退出交互模式")
                 return
-            # 发送命令到串口（附加换行）
-            outb = (cmd_strip).encode("utf-8")
-            try:
-                ser.write(outb)
+            elif cmd_strip.startswith("SEND JSON="):
+                path = cmd_strip[10:].strip()
+                ok = send_json(port, baud, path,ser=ser)
+                if ok:
+                    print("发送成功")
+                else:
+                    print("发送失败")
+            elif cmd_strip.startswith("ARMSEND="):
+                name = cmd_strip[8:].strip()
+                # 发送"ARMSEND"+name
+                ser.write(f"ARMSEND={name}\n".encode("utf-8"))
                 ser.flush()
-            except Exception as e:
-                print("发送失败:", e)
-                stop_event.set()
-                rd_thread.join(timeout=1.0)
-                return
+                print("已执行绘画函数...")
+            else:
+                # 发送命令到串口（附加换行）
+                outb = (cmd_strip + "\n").encode("utf-8")
+                try:
+                    ser.write(outb)
+                    ser.flush()
+                except Exception as e:
+                    print("发送失败:", e)
+                    stop_event.set()
+                    rd_thread.join(timeout=1.0)
+                    return
     finally:
         stop_event.set()
         rd_thread.join(timeout=1.0)
 
 
-def send_json(port: str, baud: int, filepath: str, retries: int=3, resp_timeout: float=10.0, inter_chunk_delay: float=0.01) -> bool:
+def send_json(port: str, baud: int, filepath: str, retries: int=3, resp_timeout: float=10.0, inter_chunk_delay: float=0.01, ser=None) -> bool:
     """
     - 使用串口流式发送JSON文件，并进行系列检查操作
     """
@@ -128,11 +142,13 @@ def send_json(port: str, baud: int, filepath: str, retries: int=3, resp_timeout:
     chk = calc_sum8(payload)
     # 用 hex 形式发送 chk，maix 端能解析 0x.. 或 十进制
     header = f"JSONBEGIN len={length} chk=0x{chk:02X}\n".encode("utf-8")
-    try:
-        ser = serial.Serial(port, baud, timeout=0.1)
-    except Exception as e:
-        print("open serial failed:", e)
-        return False
+    success = False
+    if ser is None:
+        try:
+            ser = serial.Serial(port, baud, timeout=0.1)
+        except Exception as e:
+            print("open serial failed:", e)
+            return False
 
     try:
         for attempt in range(1, retries+1):
@@ -159,7 +175,7 @@ def send_json(port: str, baud: int, filepath: str, retries: int=3, resp_timeout:
                     if b"OK" in resp:
                         print("收到 OK，发送成功")
                         # ser.close()
-                        interactive_session(ser) # 监听
+                        success = True
                         return True
                     if b"ERR" in resp:
                         print("收到 ERR，重试")
@@ -169,10 +185,11 @@ def send_json(port: str, baud: int, filepath: str, retries: int=3, resp_timeout:
             print("未收到 OK，等待或重试")
         print("发送失败，超出重试次数")
     finally:
-        try:
-            ser.close()
-        except:
-            pass
+        if ser is None or not success:
+            try:
+                ser.close()
+            except:
+                pass
     return False
 
 if __name__ == "__main__":

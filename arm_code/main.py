@@ -63,11 +63,9 @@ def execute_traj_worker(ori_angle, ori_pose):
     """
     从queue中不断取出点构架轨迹csv。依次进行csv绘制。同一轨迹的颜色应当相同。
     """
-    global COLOR_CSV
+    global COLOR_CSV, Path_id,traj_queue,color_queue
     DEFAULT_XYZ = ori_pose["pose"][0:3]
     DEFAULT_RXRYRZ = ori_pose["pose"][3:6]
-    assert list(DEFAULT_XYZ) == [276.0, 123.0, 227.0]
-    assert list(DEFAULT_RXRYRZ) == [-180.0, 0.0, 0.0]
     DEFAULT_JOINT = ori_angle["joint"] # [j1,j2,j3,j4,j5,j6] of P7
 
     MOVE_V = 50
@@ -92,14 +90,14 @@ def execute_traj_worker(ori_angle, ori_pose):
                     z = float(p[2]) if (isinstance(p, (list,tuple)) and len(p) >= 3) else DEFAULT_XYZ[2]
                     # 构造行数据：关节角度 + 位置 + 姿态 + user/tool/ecoKey
                     # 反解算joint
-                    errid, jointpoint = InverseKin({"pose":[x_+DEFAULT_XYZ[0], y_+DEFAULT_XYZ[1], z]+list[DEFAULT_RXRYRZ]})
+                    errid, jointpoint = InverseKin({"pose":[x_+DEFAULT_XYZ[0], y_+DEFAULT_XYZ[1], z]+DEFAULT_RXRYRZ})
                     if errid == 0:
-                        row = jointpoint["joint"] + [x_+DEFAULT_XYZ[0], y_+DEFAULT_XYZ[1], z] + list(DEFAULT_RXRYRZ) + [0, 0, 0]
+                        row = jointpoint["joint"] + [x_+DEFAULT_XYZ[0], y_+DEFAULT_XYZ[1], z] + DEFAULT_RXRYRZ + [0, 0, 0]
                         writer1.writerow(row)
                         writer2.writerow(row)
 
                     # time.sleep(2.0)
-                
+                print("LEN:",color_queue)
                 COLOR_CSV[Path_id] = {"csv":(file1,file2),"color":color_queue.get()}
             print(f"成功写入{file1},{file2}-----------------")
         finally:
@@ -129,7 +127,7 @@ def receiveThread(socket1):
         完整轨迹接收完后把点列表放入 traj_queue，由执行线程依次绘制/运动。
         同时保持原有对 Initialize 和 biao 的处理与回执。
     """
-    global img_stuts, zhilin, stuts_add, COLOR_CSV
+    global img_stuts, zhilin, stuts_add, COLOR_CSV, Path_id,traj_queue,color_queue
     print("启动接收线程")
     buf = ""           # 文本缓冲
     in_traj = False
@@ -169,6 +167,7 @@ def receiveThread(socket1):
                 # COLOR
                 if parts and parts[0] == 'COLOR':
                     color = parts[1] if len(parts) >= 2 else "default"
+                    color_queue.put(color)
                     TCPWrite(socket1, "COLOR_ACK")
                     continue
                 # END 行
@@ -176,7 +175,6 @@ def receiveThread(socket1):
                     in_traj = False
                     # 将收集到的点入队执行
                     if collected:
-                        color_queue.put(color)
                         traj_queue.put(collected)
                         TCPWrite(socket1, "TRAJ_RECEIVED")
                     else:
@@ -213,6 +211,24 @@ def receiveThread(socket1):
                 pass
 
 
+def MovJ_self(point) -> bool:
+    assert point is not None, "点未定义"
+    status =  CheckMovJ(point)
+    if status == 0:
+        MovJ(point,{"v":10})
+        return True
+    else:
+        return False
+    
+def MovL_self(point) -> bool:
+    assert point is not None, "点未定义"
+    status =  CheckMovL(point)
+    if status == 0:
+        MovL(point,{"v":10})
+        return True
+    else:
+        return False
+
 # 网口初始化
 err, socket1 = TCPCreate(True, "192.168.5.1", 5200)   #视觉系统
 TCPStart(socket1, 0)
@@ -222,17 +238,39 @@ tcp_js1.daemon = True
 tcp_js1.start()
 print("启动接收线程完成")
 
-## 运动至初始点位
-assert P7 is not None, "P7 未定义，请根据实际机械臂型号修改代码"
-status = CheckMovJ(P7)
-if status == 0:
-    MovJ(P7)
-
+# ## 运动至初始点位
+# assert P7 is not None, "P7 未定义，请根据实际机械臂型号修改代码"
+# status = CheckMovJ(P7)
+# if status == 0:
+#     MovJ(P7)
 time.sleep(2.0)
 ori_point_angle = GetAngle()
 ori_point_pose = GetPose()
 
+traj_thread = threading.Thread(target=execute_traj_worker, args=({"joint":[0,0,0,0,0,0]}, {"pose":[260.543304,-75.82502,390,176.204605,-3.127154,90.00]}))
+traj_thread.daemon = True
+traj_thread.start()
+
 while True:
-    if stuts_add:
-        execute_traj_worker(ori_angle=ori_point_angle, ori_pose=ori_point_pose)
+    if stuts_add: # 
+        # execute_traj_worker(ori_angle=ori_point_angle, ori_pose=ori_point_pose) ## 构建csv
+        ## 进行夹取
+        time.sleep(5.0) # 等待构建完
+        MovJ_self(P12)
+        time.sleep(1.0)
+        MovJ_self(P9)
+        SnapOpen()
+        time.sleep(1.0)
+        MovL_self(P10)
+        SnapClose()
+        time.sleep(1.0)
+        MovJ_self(P9)
+        time.sleep(1.0)
+        ## 进行沾液
+        MovJ_self(P11)
+        Input_liquid(32.0,angle=pi/6)
+        time.sleep(2.0)
+        MovJ_self(P13)
+        time.sleep(2.0)
+        MovJ_self(P14)
         stuts_add = False
