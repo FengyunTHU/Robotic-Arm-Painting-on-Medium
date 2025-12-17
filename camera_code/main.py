@@ -5,19 +5,27 @@ from maix import camera, display, pinmap, uart, app, time, gpio, err
 import threading
 from enum import Enum
 
-class ServoStatus(Enum):
-    HIGH = 1
-    LOW = 0
 
-status = ServoStatus.LOW ## 初始为低电平
+### 18|->启动终止。1启动、0终止
+### 19|->正转反转。1正转、0反转
 pin_name = "A18"
 gpio_name = "GPIOA18"
+pin_name2 = "A19"
+gpio_name2 = "GPIOA19"
 ## 设置A18为GPIOA18
 err.check_raise(pinmap.set_pin_function(pin_name, gpio_name), "set pin failed")# MaixCAM的引脚是3.3V耐受，请勿输入5V电压。
+err.check_raise(pinmap.set_pin_function(pin_name2, gpio_name2), "set pin failed")
 servo = gpio.GPIO(gpio_name, gpio.Mode.OUT)
+servo2 = gpio.GPIO(gpio_name2, gpio.Mode.OUT)
+## 0为低电平、1为高电平
 servo.value(0)
-print("aaa")
-
-while 1:
-    servo.toggle()
-    time.sleep_ms(1000)
+servo2.value(1)
+time.sleep(2.0)
+servo.value(1)
+time.sleep(7.0)
+servo.value(0)
+time.sleep(2.0)
+servo2.value(0)
+servo.value(1)
+time.sleep(7.0)
+servo.value(0)

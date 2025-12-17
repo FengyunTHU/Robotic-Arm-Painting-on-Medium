@@ -3,7 +3,7 @@ import time ,threading  # 导入库函数
 import json
 import queue
 import csv ## 创建csv文件
-from math import sin,cos,tan
+from math import sin,cos,tan,pi
 
 
 ## 在下面俩个文件夹中都保存了csv
@@ -32,9 +32,18 @@ y负方向：右侧
 z正方向：上侧
 """
 
+### 松开
+def SnapOpen():
+    SetParallelGripper(15)
+    time.sleep(0.5)
+
+### 夹取
+def SnapClose():
+    SetParallelGripper(7)
+    time.sleep(0.5)
 
 ### 进行液体吸取的函数
-def Input_liquid(start_point, distance, target:str="Y", angle:float=30.0) -> bool:
+def Input_liquid(distance, target:str="Y", angle:float=pi/6) -> bool:
     ## angle是与水平方向的夹角
     current_angle = GetAngle()
     current_pose = GetPose()
@@ -43,9 +52,9 @@ def Input_liquid(start_point, distance, target:str="Y", angle:float=30.0) -> boo
     ## 向y正方向移动
     YR = Y + distance*cos(angle)
     ZR = Z - distance*sin(angle)
-    MovL({"pose":[X,YR,ZR,RX,RY,RZ]},{"v":30})
-    time.sleep(1.0)
-    MovL({"pose":[X,Y,Z,RX,RY,RZ]},{"v":30})
+    MovL({"pose":[X,YR,ZR,RX,RY,RZ]},{"v":10})
+    time.sleep(2.0)
+    MovL({"pose":[X,Y,Z,RX,RY,RZ]},{"v":10})
     return True
 
 
@@ -112,13 +121,13 @@ def run(pathid:int):
 def receiveThread(socket1):
     """
     接收线程：读取 socket 数据，支持两类内容
-      1) 原有命令处理（Initialize / biao ...）
-      2) 轨迹接收协议（可由上位机按行发送）:
-         - START <idx> <n>
-         - x,y 或 x,y,z  （每行一个点）
-         - END <idx>
-       完整轨迹接收完后把点列表放入 traj_queue，由执行线程依次绘制/运动。
-       同时保持原有对 Initialize 和 biao 的处理与回执。
+        1) 原有命令处理（Initialize / biao ...）
+        2) 轨迹接收协议（可由上位机按行发送）:
+            - START <idx> <n>
+            - x,y 或 x,y,z  （每行一个点）
+            - END <idx>
+        完整轨迹接收完后把点列表放入 traj_queue，由执行线程依次绘制/运动。
+        同时保持原有对 Initialize 和 biao 的处理与回执。
     """
     global img_stuts, zhilin, stuts_add, COLOR_CSV
     print("启动接收线程")
