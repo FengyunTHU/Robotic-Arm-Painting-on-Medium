@@ -20,6 +20,10 @@ stuts_05 = 0
 file_path = ""
 arm_name = ""
 
+### 控制抽屉开关的status
+status_C = 0 # 0关1开
+status_D = 0 # 0停1动
+
 #摄像头初始化
 cam = camera.Camera(1024, 960)
 disp = display.Display()
@@ -31,6 +35,44 @@ device = "/dev/ttyS0"
 serial0 = uart.UART(device, 115200)
 device = "/dev/ttyS2"
 serial1 = uart.UART(device, 115200)
+
+## GPIO初始化
+### 18|->启动终止。1启动、0终止
+### 19|->正转反转。1正转、0反转
+pin_name = "A18"
+gpio_name = "GPIOA18"
+pin_name2 = "A19"
+gpio_name2 = "GPIOA19"
+## 设置A18为GPIOA18
+err.check_raise(pinmap.set_pin_function(pin_name, gpio_name), "set pin failed")# MaixCAM的引脚是3.3V耐受，请勿输入5V电压。
+err.check_raise(pinmap.set_pin_function(pin_name2, gpio_name2), "set pin failed")
+servo = gpio.GPIO(gpio_name, gpio.Mode.OUT) # 控制启动终止
+servo2 = gpio.GPIO(gpio_name2, gpio.Mode.OUT) # 控制正反
+
+listening_event = threading.Event()
+listening_event.set()
+
+def drawerOUT(time=7.0):
+    """抽屉出"""
+    global servo, servo2
+    time.sleep(1.0)
+    servo.value(0)
+    servo2.value(1)
+    servo.value(1)
+    time.sleep(time)
+    servo.value(0)
+    time.sleep(1.0)
+
+def drawerIN(time=7.0):
+    """抽屉进"""
+    global servo, servo2
+    time.sleep(1.0)
+    servo.value(0)
+    servo2.value(0)
+    servo.value(1)
+    time.sleep(time)
+    servo.value(0)
+    time.sleep(1.0)
 
 
 # ...existing code...
@@ -305,9 +347,32 @@ def send_paths_via_serial0(paths, colors=None, *,
         return False
 
 
-# uart0_thread = threading.Thread(target=re_uart_file, args = (serial0,))
-# uart0_thread.daemon = True
-# uart0_thread.start()
+### serial0监视机械臂开关抽屉信息
+def handle_serial0(serial):
+    global status_C, status_D
+    while True:
+        if not listening_event.is_set():
+            listening_event.wait()
+        data = serial.read()
+        if data:
+            if isinstance(data, bytes):
+                msg = data.decode('utf-8', errors='ignore').strip()
+            else:
+                msg = str(data).strip()
+            if msg == "OPEN":
+                status_C = 1
+                status_D = 1
+            elif msg == "CLOSE":
+                status_C = 0
+                status_D = 1
+            else:
+                status_C = 0
+                status_D = 0
+
+
+uart0_thread = threading.Thread(target=handle_serial0, args = (serial0,))
+uart0_thread.daemon = True
+uart0_thread.start()
 
 uart1_thread = threading.Thread(target=re_uart_file, args = (serial1,))
 uart1_thread.daemon = True
@@ -336,6 +401,7 @@ while not app.need_exit():
         # 执行发送
         if not stuts_hassend0 and stuts_05:
             print("001", arm_name, file_path)
+            listening_event.clear()
             # 读取并解析 JSON，取每条轨迹完整点列
             with open(file_path, "rb") as fr:
                 payload = fr.read()
@@ -350,10 +416,23 @@ while not app.need_exit():
             else:
                 serial1.write_str(b"NO_PATHS_FOUND\n")
             stuts_hassend0 = True
+            listening_event.set()
         stuts_ok1 = ""
 
     if stuts_send1TO0 != "" :
         serial0.write_str(stuts_send1TO0.encode("utf-8"))
         stuts_send1TO0 = ""
+
+    ## 抽屉操作
+    if status_D:
+        # 运动
+        if status_C:
+            # 开启
+            drawerOUT()
+        else:
+            # 关闭
+            drawerIN()
+        status_D = 0
+        status_C = 0
 
 

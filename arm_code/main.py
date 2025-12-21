@@ -14,8 +14,6 @@ PATH2:str = "/dobot/userdata/project/process/trajectory/"
 HEAD:list = ['j1','j2','j3','j4','j5','j6','x','y','z','Rx','Ry','Rz','user','tool','ecoKey']
 
 
-img_stuts = 0         # 摄像头下发指令编码
-zhilin   = 0         # 摄像头下发16进制指令信息
 stuts_add = False
 Path_id = 0
 
@@ -41,6 +39,7 @@ def SnapOpen():
 def SnapClose():
     SetParallelGripper(7)
     time.sleep(0.5)
+
 
 ### 进行液体吸取的函数
 def Input_liquid(distance, target:str="Y", angle:float=pi/6) -> bool:
@@ -103,8 +102,6 @@ def execute_traj_worker(ori_angle, ori_pose):
         finally:
             traj_queue.task_done()
 
-def GetLiquid(color):
-    return 
 
 def run(pathid:int):
     file01,file02 = COLOR_CSV[pathid]["csv"]
@@ -127,7 +124,7 @@ def receiveThread(socket1):
         完整轨迹接收完后把点列表放入 traj_queue，由执行线程依次绘制/运动。
         同时保持原有对 Initialize 和 biao 的处理与回执。
     """
-    global img_stuts, zhilin, stuts_add, COLOR_CSV, Path_id,traj_queue,color_queue
+    global stuts_add, COLOR_CSV, Path_id,traj_queue,color_queue
     print("启动接收线程")
     buf = ""           # 文本缓冲
     in_traj = False
@@ -228,6 +225,31 @@ def MovL_self(point) -> bool:
         return True
     else:
         return False
+    
+### 完整夹取
+def Snap():
+    time.sleep(5.0) # 等待构建完
+    MovJ_self(P12)
+    time.sleep(1.0)
+    MovJ_self(P9)
+    SnapOpen()
+    time.sleep(1.0)
+    MovL_self(P10)
+    SnapClose()
+    time.sleep(1.0)
+    MovJ_self(P9)
+    time.sleep(1.0)
+
+### 完整取液
+def GetLiquid(color):
+    MovJ_self(P11)
+    Input_liquid(32.0,angle=pi/6)
+    time.sleep(2.0)
+    MovJ_self(P13)
+    time.sleep(2.0)
+    MovJ_self(P14)
+    return 
+
 
 # 网口初始化
 err, socket1 = TCPCreate(True, "192.168.5.1", 5200)   #视觉系统
@@ -255,22 +277,29 @@ while True:
     if stuts_add: # 
         # execute_traj_worker(ori_angle=ori_point_angle, ori_pose=ori_point_pose) ## 构建csv
         ## 进行夹取
-        time.sleep(5.0) # 等待构建完
-        MovJ_self(P12)
-        time.sleep(1.0)
-        MovJ_self(P9)
-        SnapOpen()
-        time.sleep(1.0)
-        MovL_self(P10)
-        SnapClose()
-        time.sleep(1.0)
-        MovJ_self(P9)
-        time.sleep(1.0)
-        ## 进行沾液
-        MovJ_self(P11)
-        Input_liquid(32.0,angle=pi/6)
-        time.sleep(2.0)
-        MovJ_self(P13)
-        time.sleep(2.0)
-        MovJ_self(P14)
+        Snap()
         stuts_add = False
+
+    ## 检测有没有csv文件已经出现，且和PathID数值相等
+    if len(COLOR_CSV) >= Path_id:
+        opentuts = False
+        for idx in range(len(COLOR_CSV)):
+            file1,file2 = COLOR_CSV[idx+1]["csv"]
+            colorx = COLOR_CSV[idx+1]["color"]
+            if idx == 0:
+                GetLiquid(colorx)
+            ## 执行运动
+            if not opentuts:
+                TCPWrite(socket1, "OPEN")
+                opentuts = True
+                time.sleep(13.0) ## 等待开启
+            run(idx+1)
+            time.sleep(2.0)
+            if idx+2 <= Path_id:
+                colorx_later = COLOR_CSV[idx+2]["color"]
+                if colorx_later != colorx:
+                    ## 切换颜色
+                    TCPWrite(socket1, "CLOSE")
+                    opentuts = False
+                    time.sleep(13.0)
+                    GetLiquid(colorx_later)
