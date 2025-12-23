@@ -52,25 +52,25 @@ servo2 = gpio.GPIO(gpio_name2, gpio.Mode.OUT) # 控制正反
 listening_event = threading.Event()
 listening_event.set()
 
-def drawerOUT(time=7.0):
+def drawerOUT(timex=7.0):
     """抽屉出"""
     global servo, servo2
     time.sleep(1.0)
     servo.value(0)
     servo2.value(1)
     servo.value(1)
-    time.sleep(time)
+    time.sleep(timex)
     servo.value(0)
     time.sleep(1.0)
 
-def drawerIN(time=7.0):
+def drawerIN(timex=7.0):
     """抽屉进"""
     global servo, servo2
     time.sleep(1.0)
     servo.value(0)
     servo2.value(0)
     servo.value(1)
-    time.sleep(time)
+    time.sleep(timex)
     servo.value(0)
     time.sleep(1.0)
 
@@ -436,3 +436,4 @@ while not app.need_exit():
         status_C = 0
 
 
+print("自动退出")

@@ -105,11 +105,15 @@ def execute_traj_worker(ori_angle, ori_pose):
 
 def run(pathid:int):
     file01,file02 = COLOR_CSV[pathid]["csv"]
-    color = COLOR_CSV[pathid]["color"]
-    GetLiquid(color) # 获取对应颜色的菌液
+    print(file01)
+    # color = COLOR_CSV[pathid]["color"]
+    # GetLiquid(color) # 获取对应颜色的菌液
     time.sleep(1.0)
     ## 执行绘画
-    StartPath(f"x{pathid}.csv")
+    StartPoint = GetPathStartPose(f"x{pathid}.csv")
+    MovJ_self(StartPoint)
+    time.sleep(1.0)
+    StartPath(f"x{pathid}.csv", {"multi":1.0})
     time.sleep(1.0)
 
 
@@ -228,8 +232,8 @@ def MovL_self(point) -> bool:
     
 ### 完整夹取
 def Snap():
-    time.sleep(5.0) # 等待构建完
-    MovJ_self(P12)
+    # time.sleep(5.0) # 等待构建完
+    # MovJ_self(P12)
     time.sleep(1.0)
     MovJ_self(P9)
     SnapOpen()
@@ -240,14 +244,28 @@ def Snap():
     MovJ_self(P9)
     time.sleep(1.0)
 
+def SnapRev():
+    # time.sleep(5.0) # 等待构建完
+    # MovJ_self(P12)
+    time.sleep(1.0)
+    MovJ_self(P9)
+    # SnapOpen()
+    time.sleep(1.0)
+    MovL_self(P10)
+    time.sleep(1.0)
+    SnapOpen()
+    time.sleep(1.0)
+    MovJ_self(P9)
+    time.sleep(1.0)
+
 ### 完整取液
 def GetLiquid(color):
     MovJ_self(P11)
     Input_liquid(32.0,angle=pi/6)
     time.sleep(2.0)
     MovJ_self(P13)
-    time.sleep(2.0)
-    MovJ_self(P14)
+    # time.sleep(2.0)
+    # MovJ_self(P14)
     return 
 
 
@@ -273,33 +291,57 @@ traj_thread = threading.Thread(target=execute_traj_worker, args=({"joint":[0,0,0
 traj_thread.daemon = True
 traj_thread.start()
 
+STAR = True
+
+
 while True:
-    if stuts_add: # 
-        # execute_traj_worker(ori_angle=ori_point_angle, ori_pose=ori_point_pose) ## 构建csv
-        ## 进行夹取
-        Snap()
-        stuts_add = False
+    # if stuts_add: # 
+    #     # execute_traj_worker(ori_angle=ori_point_angle, ori_pose=ori_point_pose) ## 构建csv
+    #     ## 进行夹取
+    #     print("夹取......")
+    #     Snap()
+    #     stuts_add = False
 
     ## 检测有没有csv文件已经出现，且和PathID数值相等
-    if len(COLOR_CSV) >= Path_id:
+    if len(COLOR_CSV) >= 3 and STAR:
+        print(COLOR_CSV)
+        print("夹取......")
+        Snap()
+        time.sleep(5.0)
         opentuts = False
-        for idx in range(len(COLOR_CSV)):
+        DRAWNUM = 2
+        for idx in range(DRAWNUM):
             file1,file2 = COLOR_CSV[idx+1]["csv"]
             colorx = COLOR_CSV[idx+1]["color"]
             if idx == 0:
+                print("取液........")
                 GetLiquid(colorx)
             ## 执行运动
             if not opentuts:
                 TCPWrite(socket1, "OPEN")
                 opentuts = True
                 time.sleep(13.0) ## 等待开启
+            MovJ_self(P13)
+            time.sleep(1.0)
+            MovJ_self(P14)
             run(idx+1)
             time.sleep(2.0)
-            if idx+2 <= Path_id:
+            if idx+2 <= DRAWNUM:
                 colorx_later = COLOR_CSV[idx+2]["color"]
                 if colorx_later != colorx:
                     ## 切换颜色
+                    MovJ_self(P13)
                     TCPWrite(socket1, "CLOSE")
                     opentuts = False
                     time.sleep(13.0)
+                    print("取液.............")
                     GetLiquid(colorx_later)
+        ## 放回
+        print("放回.....")
+        MovJ_self(P13)
+        TCPWrite(socket1, "CLOSE")
+        opentuts = False
+        time.sleep(13.0)
+        SnapRev()
+        STAR = False
+        
