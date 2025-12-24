@@ -287,7 +287,7 @@ time.sleep(2.0)
 ori_point_angle = GetAngle()
 ori_point_pose = GetPose()
 
-traj_thread = threading.Thread(target=execute_traj_worker, args=({"joint":[0,0,0,0,0,0]}, {"pose":[260.543304,-75.82502,390,176.204605,-3.127154,90.00]}))
+traj_thread = threading.Thread(target=execute_traj_worker, args=({"joint":[0,0,0,0,0,0]}, {"pose":[245.00,-75.82502,390,176.204605,-3.127154,90.00]}))
 traj_thread.daemon = True
 traj_thread.start()
 

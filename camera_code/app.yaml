@@ -1,0 +1,8 @@
+id: uart001
+name: UART DRIVER
+version: 1.0.0
+author: zhj
+icon: ''
+desc: 串口函数
+files:
+  - main.py
