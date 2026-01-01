@@ -108,10 +108,12 @@ def run(pathid:int):
     print(file01)
     # color = COLOR_CSV[pathid]["color"]
     # GetLiquid(color) # 获取对应颜色的菌液
+    ## 运行到上方
     time.sleep(1.0)
     ## 执行绘画
     StartPoint = GetPathStartPose(f"x{pathid}.csv")
-    MovJ_self(StartPoint)
+    # H = 415.5184-394.000
+    MovJ_self(StartPoint) # 直接运行到初始点
     time.sleep(1.0)
     StartPath(f"x{pathid}.csv", {"multi":1.0})
     time.sleep(1.0)
@@ -216,7 +218,7 @@ def MovJ_self(point) -> bool:
     assert point is not None, "点未定义"
     status =  CheckMovJ(point)
     if status == 0:
-        MovJ(point,{"v":10})
+        MovJ(point,{"v":20})
         return True
     else:
         return False
@@ -225,7 +227,7 @@ def MovL_self(point) -> bool:
     assert point is not None, "点未定义"
     status =  CheckMovL(point)
     if status == 0:
-        MovL(point,{"v":10})
+        MovL(point,{"v":20})
         return True
     else:
         return False
@@ -263,6 +265,7 @@ def GetLiquid(color):
     MovJ_self(P11)
     Input_liquid(32.0,angle=pi/6)
     time.sleep(2.0)
+    MovJ_self(P15)
     MovJ_self(P13)
     # time.sleep(2.0)
     # MovJ_self(P14)
@@ -303,13 +306,13 @@ while True:
     #     stuts_add = False
 
     ## 检测有没有csv文件已经出现，且和PathID数值相等
-    if len(COLOR_CSV) >= 3 and STAR:
+    if len(COLOR_CSV) >= 11 and STAR:
         print(COLOR_CSV)
         print("夹取......")
         Snap()
         time.sleep(5.0)
         opentuts = False
-        DRAWNUM = 2
+        DRAWNUM = 11
         for idx in range(DRAWNUM):
             file1,file2 = COLOR_CSV[idx+1]["csv"]
             colorx = COLOR_CSV[idx+1]["color"]
@@ -323,18 +326,20 @@ while True:
                 time.sleep(13.0) ## 等待开启
             MovJ_self(P13)
             time.sleep(1.0)
-            MovJ_self(P14)
+            # MovJ_self(P14)
             run(idx+1)
             time.sleep(2.0)
             if idx+2 <= DRAWNUM:
                 colorx_later = COLOR_CSV[idx+2]["color"]
-                if colorx_later != colorx:
+                # if colorx_later != colorx:
+                if idx == 6: # 在第6笔切换颜色
                     ## 切换颜色
                     MovJ_self(P13)
                     TCPWrite(socket1, "CLOSE")
                     opentuts = False
                     time.sleep(13.0)
                     print("取液.............")
+                    MovJ_self(P15)
                     GetLiquid(colorx_later)
         ## 放回
         print("放回.....")

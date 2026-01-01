@@ -379,8 +379,8 @@ uart1_thread.daemon = True
 uart1_thread.start()
 
 
-while not app.need_exit():
-# while True:
+# while not app.need_exit():
+while True:
     img = cam.read()
     disp.show(img)
     time.sleep(2)
